@@ -18,6 +18,12 @@ db:
   # password_env: VELOAI_DB_PASS         # Read password from this env var
   # password_cmd: "vault read -field=password secret/veloai/db"  # Shell command
 
+komoot:
+  email: ""
+  password: ""
+  # email_env: KOMOOT_EMAIL
+  # password_env: KOMOOT_PASSWORD
+
 strava:
   client_id: ""
   client_secret: ""
@@ -30,12 +36,3 @@ defaults:
 fitness:
   max_hr: 0           # Your max heart rate (0 = auto-estimate from data)
   ftp: 0              # Functional Threshold Power in watts (0 = auto-estimate)
-
-# Roads/areas to avoid when planning routes
-# Each entry is a lat,lng point with a radius in meters
-# The route planner will avoid placing waypoints near these areas
-avoid:
-  # - lat: 38.75
-  #   lng: -9.33
-  #   radius: 500
-  #   reason: "busy intersection"

@@ -55,14 +55,12 @@ def refresh_access_token(client_id: str, client_secret: str, refresh_token: str)
         try:
             from db import get_connection, set_sync_state
             conn = get_connection()
-            try:
-                set_sync_state(conn, "strava_refresh_token", new_refresh)
-                _current_refresh_token = new_refresh  # set AFTER successful DB write
-                print(f"[strava] Refresh token rotated and persisted")
-            finally:
-                conn.close()
+            set_sync_state(conn, "strava_refresh_token", new_refresh)
+            _current_refresh_token = new_refresh  # set AFTER successful DB write
+            print(f"[strava] Refresh token rotated and persisted")
         except Exception as e:
             print(f"[strava] WARNING: Could not persist new refresh token: {e}")
+            # Don't update _current_refresh_token — keep old one that's still in DB
 
     return _access_token
 
@@ -81,13 +79,10 @@ def _get_token() -> str:
         try:
             from db import get_connection, get_sync_state
             conn = get_connection()
-            try:
-                stored = get_sync_state(conn, "strava_refresh_token")
-                if stored:
-                    refresh_token = stored
-                    _current_refresh_token = stored
-            finally:
-                conn.close()
+            stored = get_sync_state(conn, "strava_refresh_token")
+            if stored:
+                refresh_token = stored
+                _current_refresh_token = stored
         except Exception as e:
             print(f"[strava] Could not load stored refresh token: {e}")
 

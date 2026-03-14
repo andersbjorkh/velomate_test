@@ -1,4 +1,4 @@
-"""Polling scheduler for Strava ingestion."""
+"""Polling scheduler for Strava + Komoot ingestion."""
 
 import os
 import time
@@ -8,6 +8,7 @@ import schedule
 
 from db import get_connection, create_schema, get_sync_state
 from strava import sync_activities, backfill
+from komoot import sync_activities as sync_komoot
 from fitness import recalculate_fitness
 
 
@@ -30,7 +31,6 @@ def _get_healthy_conn():
 
 def poll_strava():
     """Fetch activities since last sync, store streams, recalculate fitness."""
-    conn = None
     try:
         conn = _get_healthy_conn()
         if not conn:
@@ -43,9 +43,22 @@ def poll_strava():
     except Exception as e:
         print(f"[poll] Strava error: {e}")
         traceback.print_exc()
-    finally:
-        if conn:
-            conn.close()
+
+
+def poll_komoot():
+    """Sync routes to DB."""
+    try:
+        conn = _get_healthy_conn()
+        if not conn:
+            print("[poll] Komoot: skipped — no DB connection")
+            return
+        count = sync_komoot(conn)
+        if count > 0:
+            recalculate_fitness(conn)
+        print(f"[poll] Komoot: {count} new activities")
+    except Exception as e:
+        print(f"[poll] Komoot error: {e}")
+        traceback.print_exc()
 
 
 def run_backfill():
@@ -55,7 +68,8 @@ def run_backfill():
         create_schema(conn)
         count = backfill(conn, months=12)
         recalculate_fitness(conn)
-        print(f"[backfill] Complete — {count} Strava activities ingested")
+        sync_komoot(conn)
+        print(f"[backfill] Complete — {count} Strava + Komoot activities ingested")
         return count
     finally:
         conn.close()
@@ -66,23 +80,26 @@ def run():
     conn = get_connection()
     try:
         create_schema(conn)
-        print("[main] Schema ready")
-        has_data = get_sync_state(conn, "strava_last_activity_epoch")
-    finally:
+    except Exception as e:
         conn.close()
+        raise RuntimeError(f"Schema creation failed: {e}")
+    print("[main] Schema ready")
 
     # Backfill on first run if no activities yet
+    has_data = get_sync_state(conn, "strava_last_activity_epoch")
     if not has_data:
         print("[main] No previous sync — running backfill")
         run_backfill()
 
     interval = int(os.environ.get("POLL_INTERVAL_MINUTES", 10))
     schedule.every(interval).minutes.do(poll_strava)
+    schedule.every(1).hours.do(poll_komoot)
 
-    print(f"[main] Polling Strava every {interval}min")
+    print(f"[main] Polling Strava every {interval}min, Komoot every 1h")
 
     # Run once immediately
     poll_strava()
+    poll_komoot()
 
     while True:
         schedule.run_pending()

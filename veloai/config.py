@@ -9,6 +9,7 @@ DEFAULT_CONFIG_PATH = os.path.expanduser("~/.config/veloai/config.yaml")
 DEFAULTS = {
     "home": {"lat": None, "lng": None, "name": ""},
     "db": {"host": "localhost", "port": 5432, "name": "veloai", "user": "veloai", "password": ""},
+    "komoot": {"email": "", "password": ""},
     "strava": {"client_id": "", "client_secret": "", "refresh_token": ""},
     "defaults": {"surface": "gravel", "loop": True},
     "fitness": {"max_hr": 0, "ftp": 0},
@@ -22,6 +23,8 @@ ENV_MAP = {
     ("db", "name"): "VELOAI_DB_NAME",
     ("db", "user"): "VELOAI_DB_USER",
     ("db", "password"): "VELOAI_DB_PASS",
+    ("komoot", "email"): "KOMOOT_EMAIL",
+    ("komoot", "password"): "KOMOOT_PASSWORD",
     ("strava", "client_id"): "STRAVA_CLIENT_ID",
     ("strava", "client_secret"): "STRAVA_CLIENT_SECRET",
     ("strava", "refresh_token"): "STRAVA_REFRESH_TOKEN",
@@ -73,17 +76,7 @@ def load(config_path: str = None) -> dict:
             if env_val:
                 # Cast to correct type
                 if isinstance(default, (int, float)) and default is not None:
-                    try:
-                        result[section][key] = type(default)(env_val)
-                    except (ValueError, TypeError):
-                        print(f"[config] Warning: invalid value for {section}.{key}: {env_val}")
-                        result[section][key] = default
-                elif default is None:
-                    # For None defaults (like home.lat/lng), try float
-                    try:
-                        result[section][key] = float(env_val)
-                    except (ValueError, TypeError):
-                        result[section][key] = env_val
+                    result[section][key] = type(default)(env_val)
                 else:
                     result[section][key] = env_val
             elif key in file_section:
@@ -92,18 +85,18 @@ def load(config_path: str = None) -> dict:
                 result[section][key] = default
 
     # Resolve secrets via _cmd/_env patterns
-    db_file = cfg.get("db", {}) or {}
-    if not result["db"].get("password"):
-        result["db"]["password"] = _resolve_secret(db_file, "password")
+    for section in ("db", "komoot"):
+        file_section = cfg.get(section, {}) or {}
+        if not result[section].get("password"):
+            result[section]["password"] = _resolve_secret(file_section, "password")
+        if section == "komoot" and not result[section].get("email"):
+            result[section]["email"] = _resolve_secret(file_section, "email")
 
     # Resolve strava secrets via _cmd/_env patterns
     strava_file = cfg.get("strava", {}) or {}
     for key in ("client_id", "client_secret", "refresh_token"):
         if not result["strava"].get(key):
             result["strava"][key] = _resolve_secret(strava_file, key)
-
-    # Load avoid zones (list, not key-value)
-    result["avoid"] = cfg.get("avoid", []) or []
 
     _config = result
     return result
