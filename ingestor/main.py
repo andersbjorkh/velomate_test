@@ -1,19 +1,20 @@
-"""Polling scheduler for Strava + Komoot ingestion."""
+"""Polling scheduler for Strava ingestion."""
 
 import os
+import sys
 import time
 import traceback
 
 import schedule
 
 from db import get_connection, create_schema, get_sync_state
-from strava import sync_activities, backfill
-from komoot import sync_activities as sync_komoot
+from strava import sync_activities, backfill, reclassify_activities
 from fitness import recalculate_fitness
 
 
 def _get_healthy_conn():
     """Get a healthy DB connection, reconnecting if needed."""
+    conn = None
     try:
         conn = get_connection()
         # Verify connection is alive
@@ -22,6 +23,11 @@ def _get_healthy_conn():
         return conn
     except Exception as e:
         print(f"[main] DB connection failed, reconnecting: {e}")
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
         try:
             return get_connection()
         except Exception as e2:
@@ -29,8 +35,24 @@ def _get_healthy_conn():
             return None
 
 
+def _daily_fitness_recalc():
+    """Recalculate fitness at the start of each day so CTL/ATL/TSB decay on rest days."""
+    conn = None
+    try:
+        conn = _get_healthy_conn()
+        if conn:
+            recalculate_fitness(conn)
+            print("[daily] Fitness recalculated through today")
+    except Exception as e:
+        print(f"[daily] Fitness recalc error: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
 def poll_strava():
     """Fetch activities since last sync, store streams, recalculate fitness."""
+    conn = None
     try:
         conn = _get_healthy_conn()
         if not conn:
@@ -43,22 +65,9 @@ def poll_strava():
     except Exception as e:
         print(f"[poll] Strava error: {e}")
         traceback.print_exc()
-
-
-def poll_komoot():
-    """Sync routes to DB."""
-    try:
-        conn = _get_healthy_conn()
-        if not conn:
-            print("[poll] Komoot: skipped — no DB connection")
-            return
-        count = sync_komoot(conn)
-        if count > 0:
-            recalculate_fitness(conn)
-        print(f"[poll] Komoot: {count} new activities")
-    except Exception as e:
-        print(f"[poll] Komoot error: {e}")
-        traceback.print_exc()
+    finally:
+        if conn:
+            conn.close()
 
 
 def run_backfill():
@@ -68,8 +77,7 @@ def run_backfill():
         create_schema(conn)
         count = backfill(conn, months=12)
         recalculate_fitness(conn)
-        sync_komoot(conn)
-        print(f"[backfill] Complete — {count} Strava + Komoot activities ingested")
+        print(f"[backfill] Complete — {count} Strava activities ingested")
         return count
     finally:
         conn.close()
@@ -77,34 +85,97 @@ def run_backfill():
 
 def run():
     """Main loop: schema init, optional backfill, then poll forever."""
-    conn = get_connection()
-    try:
-        create_schema(conn)
-    except Exception as e:
+    # Retry loop for initial DB connection — common in Docker Compose startup ordering
+    max_attempts = 10
+    retry_delay = 5
+    conn = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            conn = get_connection()
+            create_schema(conn)
+            print("[main] Schema ready")
+            has_data = get_sync_state(conn, "strava_last_activity_epoch")
+            break
+        except Exception as e:
+            print(f"[main] DB not ready (attempt {attempt}/{max_attempts}): {e}")
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+            if attempt == max_attempts:
+                print("[main] DB unavailable after max retries — exiting")
+                sys.exit(1)
+            time.sleep(retry_delay)
+    if conn:
         conn.close()
-        raise RuntimeError(f"Schema creation failed: {e}")
-    print("[main] Schema ready")
+
+    # Persist configured FTP/HR to sync_state so dashboards can read them
+    try:
+        from db import set_sync_state
+        env_ftp = os.environ.get("VELOAI_FTP", "")
+        env_hr = os.environ.get("VELOAI_MAX_HR", "")
+        if env_ftp or env_hr:
+            conn = get_connection()
+            try:
+                if env_ftp:
+                    ftp = int(env_ftp)
+                    if ftp > 0:
+                        set_sync_state(conn, "configured_ftp", env_ftp)
+                        print(f"[main] Configured FTP: {env_ftp}W")
+                if env_hr:
+                    hr = int(env_hr)
+                    if hr > 0:
+                        set_sync_state(conn, "configured_max_hr", env_hr)
+                        print(f"[main] Configured Max HR: {env_hr}")
+            finally:
+                conn.close()
+    except (ValueError, TypeError) as e:
+        print(f"[main] Invalid FTP/HR env var (skipping): {e}")
+    except Exception as e:
+        print(f"[main] Could not persist FTP/HR to sync_state (skipping): {e}")
 
     # Backfill on first run if no activities yet
-    has_data = get_sync_state(conn, "strava_last_activity_epoch")
     if not has_data:
         print("[main] No previous sync — running backfill")
         run_backfill()
+    else:
+        # Recalculate fitness on startup to extend CTL/ATL/TSB decay through today
+        conn = get_connection()
+        try:
+            recalculate_fitness(conn)
+            print("[main] Fitness recalculated through today")
+        finally:
+            conn.close()
 
     interval = int(os.environ.get("POLL_INTERVAL_MINUTES", 10))
     schedule.every(interval).minutes.do(poll_strava)
-    schedule.every(1).hours.do(poll_komoot)
+    schedule.every().day.at("00:05").do(_daily_fitness_recalc)
 
-    print(f"[main] Polling Strava every {interval}min, Komoot every 1h")
+    print(f"[main] Polling Strava every {interval}min, fitness recalc daily at 00:05")
 
     # Run once immediately
     poll_strava()
-    poll_komoot()
 
     while True:
         schedule.run_pending()
         time.sleep(30)
 
 
+def run_reclassify():
+    """One-time reclassification of all activities using Strava's type field."""
+    conn = get_connection()
+    try:
+        reclassify_activities(conn)
+        recalculate_fitness(conn)
+        print("[reclassify] Fitness metrics recalculated")
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
-    run()
+    if len(sys.argv) > 1 and sys.argv[1] == "reclassify":
+        run_reclassify()
+    else:
+        run()

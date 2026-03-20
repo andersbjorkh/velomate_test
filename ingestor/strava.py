@@ -27,6 +27,7 @@ def _request_with_retry(method, url, max_retries=3, **kwargs):
 # Module-level token cache
 _access_token = None
 _token_expires_at = 0
+_current_refresh_token = None
 
 
 def refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> str:
@@ -55,18 +56,19 @@ def refresh_access_token(client_id: str, client_secret: str, refresh_token: str)
         try:
             from db import get_connection, set_sync_state
             conn = get_connection()
-            set_sync_state(conn, "strava_refresh_token", new_refresh)
-            _current_refresh_token = new_refresh  # set AFTER successful DB write
-            print(f"[strava] Refresh token rotated and persisted")
+            try:
+                set_sync_state(conn, "strava_refresh_token", new_refresh)
+                _current_refresh_token = new_refresh  # set AFTER successful DB write
+                print(f"[strava] Refresh token rotated and persisted")
+            finally:
+                conn.close()
         except Exception as e:
+            # DB write failed — update in-memory token so the current process doesn't
+            # reuse the old (now-invalid) token. Token will be lost on restart.
+            _current_refresh_token = new_refresh
             print(f"[strava] WARNING: Could not persist new refresh token: {e}")
-            # Don't update _current_refresh_token — keep old one that's still in DB
 
     return _access_token
-
-
-# Track the latest refresh token
-_current_refresh_token = None
 
 
 def _get_token() -> str:
@@ -79,10 +81,13 @@ def _get_token() -> str:
         try:
             from db import get_connection, get_sync_state
             conn = get_connection()
-            stored = get_sync_state(conn, "strava_refresh_token")
-            if stored:
-                refresh_token = stored
-                _current_refresh_token = stored
+            try:
+                stored = get_sync_state(conn, "strava_refresh_token")
+                if stored:
+                    refresh_token = stored
+                    _current_refresh_token = stored
+            finally:
+                conn.close()
         except Exception as e:
             print(f"[strava] Could not load stored refresh token: {e}")
 
@@ -91,10 +96,6 @@ def _get_token() -> str:
         os.environ["STRAVA_CLIENT_SECRET"],
         refresh_token,
     )
-
-
-def _headers():
-    return {"Authorization": f"Bearer {_get_token()}"}
 
 
 def fetch_recent_activities(access_token: str, after_epoch: int) -> list:
@@ -187,10 +188,12 @@ def _parse_activity(raw: dict) -> dict:
         "avg_power": raw.get("average_watts"),
         "max_power": raw.get("max_watts"),
         "avg_cadence": raw.get("average_cadence"),
-        "avg_speed_kmh": round(raw.get("average_speed", 0) * 3.6, 2),
+        "avg_speed_kmh": round((raw.get("average_speed") or 0) * 3.6, 2),
         "calories": raw.get("calories"),
         "suffer_score": raw.get("suffer_score"),
         "device": device,
+        "strava_type": raw.get("type", ""),
+        "trainer": raw.get("trainer", False),
     }
 
 
@@ -268,8 +271,26 @@ def sync_activities(conn, after_epoch: int = None):
     activities = fetch_recent_activities(token, after_epoch)
     print(f"[strava] Fetched {len(activities)} activities since epoch {after_epoch}")
 
+    CYCLING_STRAVA_TYPES = {"Ride", "VirtualRide", "EBikeRide", "Handcycle", "Velomobile"}
+
     latest_epoch = after_epoch
     for raw in activities:
+        # Skip non-cycling activities
+        strava_type = raw.get("type", "")
+        if strava_type and strava_type not in CYCLING_STRAVA_TYPES:
+            print(f"  ⏭ Skipping {raw.get('name', '?')} ({strava_type})")
+            # Still track epoch so we don't re-fetch skipped activities
+            start = raw.get("start_date", "")
+            if start:
+                try:
+                    dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                    epoch = int(dt.timestamp())
+                    if epoch > latest_epoch:
+                        latest_epoch = epoch
+                except (ValueError, TypeError):
+                    pass
+            continue
+
         data = _parse_activity(raw)
 
         # Fetch detailed activity for calories, HR, suffer_score
@@ -277,13 +298,14 @@ def sync_activities(conn, after_epoch: int = None):
         detail = fetch_activity_detail(token, raw["id"])
         data = _merge_detail(data, detail)
 
-        activity_id = upsert_activity(conn, data)
+        activity_id, streams_preserved = upsert_activity(conn, data)
 
         # Fetch streams with rate limiting
         time.sleep(1.5)
         raw_streams = fetch_activity_streams(token, raw["id"])
         streams = _parse_streams(raw_streams)
-        upsert_streams(conn, activity_id, streams)
+        if streams and not streams_preserved:
+            upsert_streams(conn, activity_id, streams)
 
         # Track latest activity time (use UTC start_date, not local)
         start = raw.get("start_date", "")
@@ -296,7 +318,7 @@ def sync_activities(conn, after_epoch: int = None):
             except (ValueError, TypeError):
                 pass
 
-        print(f"  → {data['name']} ({data['date'][:10]}) — {data['distance_m']/1000:.1f}km")
+        print(f"  → {data['name']} ({(data.get('date') or '')[:10]}) — {(data.get('distance_m') or 0)/1000:.1f}km")
 
     if latest_epoch > after_epoch:
         set_sync_state(conn, "strava_last_activity_epoch", str(latest_epoch))
@@ -310,3 +332,73 @@ def backfill(conn, months: int = 12):
     after_epoch = int(cutoff.timestamp())
     print(f"[strava] Backfilling {months} months (since {cutoff.date()})")
     return sync_activities(conn, after_epoch)
+
+
+def reclassify_activities(conn):
+    """Re-fetch Strava type for all activities. Reclassify cycling, delete non-cycling."""
+    from db import classify_activity
+
+    CYCLING_STRAVA_TYPES = {"Ride", "VirtualRide", "EBikeRide", "Handcycle", "Velomobile"}
+    token = _get_token()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, strava_id FROM activities WHERE strava_id IS NOT NULL ORDER BY date")
+        db_activities = cur.fetchall()
+
+    print(f"[reclassify] {len(db_activities)} activities to check")
+
+    updated = 0
+    deleted = 0
+    skipped = 0
+    for db_id, strava_id in db_activities:
+        time.sleep(0.5)
+        try:
+            resp = _request_with_retry(
+                requests.get,
+                f"{API_BASE}/activities/{strava_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if resp.status_code == 404:
+                print(f"  [reclassify] Activity {strava_id} not found on Strava, skipping")
+                skipped += 1
+                continue
+            resp.raise_for_status()
+            raw = resp.json()
+        except Exception as e:
+            print(f"  [reclassify] Error fetching {strava_id}: {e}")
+            skipped += 1
+            continue
+
+        strava_type = raw.get("type", "")
+        name = raw.get("name", "")
+
+        # Delete non-cycling activities
+        if strava_type and strava_type not in CYCLING_STRAVA_TYPES:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM activities WHERE id = %s", (db_id,))
+            deleted += 1
+            print(f"  ✕ {name[:40]:40s} ({strava_type}) — deleted")
+            continue
+
+        # Reclassify cycling activities
+        trainer = raw.get("trainer", False)
+        with conn.cursor() as cur:
+            cur.execute("SELECT name, distance_m, device FROM activities WHERE id = %s", (db_id,))
+            row = cur.fetchone()
+            if not row:
+                continue
+
+        classified = classify_activity({
+            "strava_type": strava_type, "trainer": trainer,
+            "name": row[0], "distance_m": row[1], "device": row[2],
+        })
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE activities SET sport_type = %s, is_indoor = %s WHERE id = %s",
+                (classified["sport_type"], classified["is_indoor"], db_id),
+            )
+        updated += 1
+        print(f"  → {row[0][:40]:40s} {strava_type:20s} → {classified['sport_type']}")
+
+    print(f"[reclassify] Done: {updated} updated, {deleted} deleted, {skipped} skipped")

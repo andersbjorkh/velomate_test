@@ -52,14 +52,14 @@ def estimate_ftp(conn) -> int:
                 SELECT id FROM activities
                 WHERE date >= CURRENT_DATE - interval '90 days'
                   AND avg_power IS NOT NULL AND avg_power > 0
-            ),
+                ),
             rolling AS (
                 SELECT
                     s.activity_id,
                     AVG(s.power) OVER (
                         PARTITION BY s.activity_id
                         ORDER BY s.time_offset
-                        ROWS BETWEEN 1199 PRECEDING AND CURRENT ROW
+                        RANGE BETWEEN 1199 PRECEDING AND CURRENT ROW
                     ) AS avg_20min
                 FROM activity_streams s
                 JOIN recent_activities a ON a.id = s.activity_id
@@ -99,21 +99,29 @@ def recalculate_fitness(conn):
     env_max_hr = os.environ.get("VELOAI_MAX_HR", "")
     env_ftp = os.environ.get("VELOAI_FTP", "")
 
-    if env_max_hr and int(env_max_hr) > 0:
-        threshold_hr = int(env_max_hr)
+    try:
+        hr_val = int(env_max_hr) if env_max_hr else 0
+    except ValueError:
+        hr_val = 0
+    if hr_val > 0:
+        threshold_hr = hr_val
         print(f"[fitness] Using configured max HR: {threshold_hr}")
     else:
         threshold_hr = estimate_threshold_hr(conn)
         print(f"[fitness] Auto-estimated threshold HR: {threshold_hr}")
 
-    if env_ftp and int(env_ftp) > 0:
-        ftp = int(env_ftp)
+    try:
+        ftp_val = int(env_ftp) if env_ftp else 0
+    except ValueError:
+        ftp_val = 0
+    if ftp_val > 0:
+        ftp = ftp_val
         print(f"[fitness] Using configured FTP: {ftp}W")
     else:
         ftp = estimate_ftp(conn)
         print(f"[fitness] Auto-estimated FTP: {ftp}W (rolling 90-day best 20min × 0.95)")
 
-    # Store per-activity TSS
+    # Store per-activity TSS (cycling only — running/strength use different thresholds)
     with conn.cursor() as cur:
         cur.execute("""
             SELECT id, duration_s, avg_hr, avg_power
@@ -132,7 +140,7 @@ def recalculate_fitness(conn):
         with conn.cursor() as cur:
             cur.execute("UPDATE activities SET tss = %s WHERE id = %s", (round(tss, 1), act_id))
 
-    # Read back stored TSS + distance/elevation (reuse values just written above)
+    # Read back stored TSS + distance/elevation (cycling only)
     with conn.cursor() as cur:
         cur.execute("""
             SELECT date::date, COALESCE(tss, 0), distance_m, elevation_m
@@ -155,9 +163,10 @@ def recalculate_fitness(conn):
         daily_distance[date] = daily_distance.get(date, 0) + (distance_m or 0)
         daily_elevation[date] = daily_elevation.get(date, 0) + (elevation_m or 0)
 
-    # Walk from first to last date
+    # Walk from first activity to today (rest days still decay CTL/ATL)
+    from datetime import date as date_type
     first_date = min(daily_tss.keys())
-    last_date = max(daily_tss.keys())
+    last_date = max(max(daily_tss.keys()), date_type.today())
 
     ctl = 0.0
     atl = 0.0
