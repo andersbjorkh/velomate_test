@@ -1,5 +1,5 @@
 """Tests for classify_activity, merge_activity_data (ingestor/db.py)
-and _score_weather (veloai/weather.py)."""
+and _score_weather (velomate/weather.py)."""
 
 import sys
 from pathlib import Path
@@ -14,7 +14,7 @@ sys.modules["requests"] = MagicMock()
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ingestor"))
 
 from db import classify_activity, merge_activity_data
-from veloai.weather import _score_weather
+from velomate.weather import _score_weather
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +74,46 @@ class TestClassifyActivity:
         )
         assert "is_indoor" in result
         assert "sport_type" in result
+
+    def test_ebike_strava_type_outdoor(self):
+        result = classify_activity({"strava_type": "EBikeRide", "distance_m": 15000})
+        assert result["is_indoor"] is False
+        assert result["sport_type"] == "ebike"
+
+    def test_trainer_without_zwift_device_is_indoor(self):
+        """trainer=True with a non-zwift device -> cycling_indoor, NOT zwift."""
+        result = classify_activity(
+            {"trainer": True, "device": "karoo", "distance_m": 20000}
+        )
+        assert result["is_indoor"] is True
+        assert result["sport_type"] == "cycling_indoor"
+
+    def test_trainer_with_zwift_device(self):
+        """trainer=True with device='zwift' -> zwift (device check fires first)."""
+        result = classify_activity(
+            {"trainer": True, "device": "zwift", "distance_m": 30000}
+        )
+        assert result["is_indoor"] is True
+        assert result["sport_type"] == "zwift"
+
+    def test_virtual_ride_always_zwift(self):
+        result = classify_activity(
+            {"strava_type": "VirtualRide", "device": "unknown", "distance_m": 40000}
+        )
+        assert result["is_indoor"] is True
+        assert result["sport_type"] == "zwift"
+
+    def test_zero_distance_no_trainer_is_indoor(self):
+        result = classify_activity({"device": "unknown", "distance_m": 0})
+        assert result["is_indoor"] is True
+        assert result["sport_type"] == "cycling_indoor"
+
+    def test_normal_ride_with_distance_is_outdoor(self):
+        result = classify_activity(
+            {"device": "garmin", "distance_m": 60000, "strava_type": "Ride"}
+        )
+        assert result["is_indoor"] is False
+        assert result["sport_type"] == "cycling_outdoor"
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +188,7 @@ class TestScoreWeather:
 # best_ride_hours
 # ---------------------------------------------------------------------------
 
-from veloai.weather import best_ride_hours
+from velomate.weather import best_ride_hours
 
 
 class TestBestRideHours:

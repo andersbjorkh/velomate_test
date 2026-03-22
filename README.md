@@ -1,8 +1,15 @@
-# VeloAI 🚴
+# VeloMate 🚴
+
+[![Tests](https://github.com/elduty/velomate/actions/workflows/test.yml/badge.svg)](https://github.com/elduty/velomate/actions/workflows/test.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Grafana 12.4](https://img.shields.io/badge/grafana-12.4-orange)](https://grafana.com/)
 
 A self-hosted cycling data platform — automatic ride ingestion from Strava, Grafana dashboards for analytics, and intelligent route planning. **No Strava Premium required** — all metrics (fitness, power zones, training load, TRIMP) are computed locally from raw data.
 
 Inspired by [TeslaMate](https://github.com/teslamate-org/teslamate). Works with any device that syncs to Strava.
+
+![Overview Dashboard](screenshots/overview.png)
 
 ## Features
 
@@ -16,10 +23,52 @@ Inspired by [TeslaMate](https://github.com/teslamate-org/teslamate). Works with 
 - Daily fitness recalculation at 00:05 (rest days show CTL/ATL decay)
 - Smart deduplication when multiple devices record the same ride
 
-### Grafana Dashboards (3 dashboards)
-- **Overview** — 12 stat cards with period comparison and sport type filter, 10 daily charts split by ride type (Outdoor/Zwift/E-Bike/Indoor), fitness section (CTL/ATL/TSB with fill-between, FTP, streak, TSB gauge, 6-week fitness delta), ride type donut chart, ride frequency bar chart, outdoor records table, activities table with drill-down, lifetime ride heatmap. Manual annotations for marking events (races, FTP tests, injuries)
-- **Activity Details** — 12 stat cards, GPS route map with speed/HR/power color overlay, HR zone state timeline (colored bar showing zone per second), HR and power zones (Coggan model, zone-colored), power histogram, power vs HR scatter plot (cardiac drift detection), power zone bands on telemetry, speed & elevation / HR & power / cadence & grade telemetry, per-km splits with best/worst markers, power metrics (NP, IF, VI, EF, Work, TRIMP)
-- **All Time Progression** — 6 stat cards (totals + FTP + peak CTL), speed/power/NP/EF/HR/distance progression with 10-ride rolling averages and regression lines, FTP progression (monthly estimated), best efforts (1/5/20min peak power per ride), training zone polarization (monthly power + HR zone distribution), CTL/ATL/TSB with fill-between, cumulative distance/elevation/duration/rides/TSS/calories, monthly trends stacked by ride type, year-over-year comparison, weekly power range (candlestick), personal records with drill-down, all-time ride map
+### Grafana Dashboards
+
+Three dashboards with 98 panels across 12 visualization types.
+
+**Overview** (34 panels) — your training hub
+- 12 stat cards with period comparison + sport type filter
+- 8 delta comparison cards (vs previous period)
+- Fitness section: CTL/ATL/TSB with fill-between shading, FTP, TSB gauge, weekly streak, 6-week fitness delta
+- 10 daily charts split by ride type (Outdoor/Zwift/E-Bike/Indoor)
+- Ride type donut, ride frequency bar chart
+- Outdoor records table (period best vs all-time best)
+- Activities table with drill-down to Activity Details
+- Lifetime ride heatmap
+- Manual annotations for marking events (races, FTP tests, injuries)
+
+![Activity Details](screenshots/activity.png)
+
+**Activity Details** (32 panels) — per-ride deep dive
+- 12 summary stat cards + 7 advanced metrics (NP, IF, VI, EF, Work, TRIMP, aerobic decoupling)
+- GPS route map with speed/HR/power color overlay
+- HR and power zones by kilometer (stacked bar charts)
+- HR and power zone distribution (Coggan model, zone-colored)
+- Power vs HR scatter plot (cardiac drift detection)
+- Power zone bands on HR & Power telemetry
+- Speed & elevation / HR & power / cadence & grade telemetry (distance-based x-axis)
+- Per-km splits table with best/worst markers
+- Power duration curve
+
+![All Time Progression](screenshots/progression.png)
+
+**All Time Progression** (32 panels) — long-term trends
+- 6 stat cards: total distance, elevation, rides, hours, current FTP, peak CTL
+- 6 progression scatter plots with 10-ride rolling averages and regression lines (speed, power, NP, EF, HR, distance)
+- FTP progression (monthly estimated from stream data)
+- Best efforts (1min/5min/20min peak power per ride)
+- Weekly power range (candlestick — week-over-week comparison)
+- Training zone polarization (monthly power + HR zone stacked bars)
+- CTL/ATL/TSB fitness history with fill-between shading
+- 6 cumulative totals (distance, elevation, duration, rides, TSS, calories)
+- Monthly trends stacked by ride type
+- Year-over-year distance comparison
+- Annual totals table
+- Personal records with drill-down links
+- All-time ride map
+
+![Route Preview](screenshots/route-preview.png)
 
 ### Intelligent Route Planning
 - Generates real road-following GPX loops via [Valhalla](https://github.com/valhalla/valhalla) (free, OpenStreetMap-based)
@@ -33,7 +82,7 @@ Inspired by [TeslaMate](https://github.com/teslamate-org/teslamate). Works with 
 
 ## Route Intelligence — 10 Data Sources
 
-When planning a route, VeloAI selects waypoints and enriches the output using:
+When planning a route, VeloMate selects waypoints and enriches the output using:
 
 | # | Source | Data | API |
 |---|--------|------|-----|
@@ -52,7 +101,7 @@ Additionally, the route planner detects **waymarked cycling trails** (EuroVelo, 
 
 ## Deduplication — Data Richness Scoring
 
-When multiple devices record the same ride (e.g., a bike computer and a watch both syncing to Strava), VeloAI keeps the record with the richest data:
+When multiple devices record the same ride (e.g., a bike computer and a watch both syncing to Strava), VeloMate keeps the record with the richest data:
 
 | Field | Score |
 |-------|-------|
@@ -70,7 +119,7 @@ The record with the higher total score wins. Missing fields from the losing reco
 ```
 Any device → Strava → [Ingestor] → PostgreSQL → Grafana dashboards
                                         ↑
-                            VeloAI CLI (route planning + recommendations)
+                            VeloMate CLI (route planning + recommendations)
                                         ↓
                               Valhalla → GPX file
 ```
@@ -90,8 +139,8 @@ The CLI runs locally and connects to the database over the network.
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/your-user/veloai.git
-cd veloai
+git clone https://github.com/elduty/velomate.git
+cd velomate
 cp .env.example .env
 # Edit .env with your Strava API credentials and passwords
 ```
@@ -123,7 +172,7 @@ On first run, the ingestor backfills the last 12 months of Strava activities.
 
 ```bash
 pip install -r requirements.txt
-cp config.example.yaml ~/.config/veloai/config.yaml
+cp config.example.yaml ~/.config/velomate/config.yaml
 # Edit with your home coordinates, DB host, and Strava credentials
 ```
 
@@ -133,14 +182,14 @@ Credentials support three methods: direct values, environment variables, or shel
 
 ```bash
 # Weekly ride recommendation (fitness + weather + past routes)
-python3 -m veloai.cli
+python3 -m velomate.cli
 
 # Plan a route
-python3 -m veloai.cli plan --duration 2h
-python3 -m veloai.cli plan --distance 50km --surface gravel
-python3 -m veloai.cli plan --duration 3h --waypoints "Sintra,Cascais"
-python3 -m veloai.cli plan --duration 1h --surface mtb --safety 1.0
-python3 -m veloai.cli plan --distance 30 --preference comfort
+python3 -m velomate.cli plan --duration 2h
+python3 -m velomate.cli plan --distance 50km --surface gravel
+python3 -m velomate.cli plan --duration 3h --waypoints "Sintra,Cascais"
+python3 -m velomate.cli plan --duration 1h --surface mtb --safety 1.0
+python3 -m velomate.cli plan --distance 30 --preference comfort
 ```
 
 ### Plan flags
@@ -164,7 +213,7 @@ python3 -m veloai.cli plan --distance 30 --preference comfort
 ### Example output
 
 ```
-🗺 *VeloAI 2h00m Road via Miradouro de Porto Salvo, Cotão, Viewpoint*
+🗺 *VeloMate 2h00m Road via Miradouro de Porto Salvo, Cotão, Viewpoint*
   📏 24 km
   📅 2026-03-16 at 09:00
   🛤 Surface: asphalt 53%, unknown 44%, paving_stones 2%
@@ -175,7 +224,7 @@ python3 -m veloai.cli plan --distance 30 --preference comfort
   🕐 Best time: 09:00 (14°C, wind 10 km/h, UV 2)
   🌅 Sunrise 06:45, sunset 18:46
   💪 neutral (TSB -4)
-  💾 GPX: /tmp/veloai_route_road_29km.gpx
+  💾 GPX: /tmp/velomate_route_road_29km.gpx
 ```
 
 ## Fitness Metrics
@@ -188,11 +237,11 @@ ATL       = 7-day EMA of daily TSS    (acute training load / fatigue)
 TSB       = CTL − ATL                 (training stress balance / form)
 ```
 
-- **FTP**: auto-estimated from rolling 90-day best 20-minute power × 0.95, or configured via `VELOAI_FTP` / `config.yaml`
+- **FTP**: auto-estimated from rolling 90-day best 20-minute power × 0.95, or configured via `VELOMATE_FTP` / `config.yaml`
 - **NP**: Normalized Power — 30s rolling average, 4th power, mean, 4th root. Pre-calculated from stream data per activity
 - **EF**: Efficiency Factor = NP / avg HR. Rising EF indicates improving aerobic fitness
 - **Work**: Total energy output in kJ = sum of per-second power from stream data
-- **Threshold HR**: 95th percentile of your max HRs, or configured via `VELOAI_MAX_HR` / `config.yaml`
+- **Threshold HR**: 95th percentile of your max HRs, or configured via `VELOMATE_MAX_HR` / `config.yaml`
 - **TSB interpretation**: > +10 fresh · -10 to +10 neutral · < -10 fatigued
 
 ## Database Schema
@@ -220,12 +269,12 @@ Configured via `.env` file:
 | `STRAVA_CLIENT_SECRET` | Yes | From Strava API settings |
 | `STRAVA_REFRESH_TOKEN` | Yes | OAuth refresh token |
 | `GRAFANA_PASSWORD` | Yes | Grafana admin password |
-| `VELOAI_MAX_HR` | No | Your max heart rate (0 = auto-estimate) |
-| `VELOAI_FTP` | No | Your FTP in watts (0 = auto-estimate) |
+| `VELOMATE_MAX_HR` | No | Your max heart rate (0 = auto-estimate) |
+| `VELOMATE_FTP` | No | Your FTP in watts (0 = auto-estimate) |
 
 ### CLI (local)
 
-Configured via `~/.config/veloai/config.yaml` (see `config.example.yaml`):
+Configured via `~/.config/velomate/config.yaml` (see `config.example.yaml`):
 
 - Home coordinates (required for route planning)
 - Database connection
