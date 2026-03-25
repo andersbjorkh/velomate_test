@@ -111,26 +111,62 @@ def run():
     if conn:
         conn.close()
 
-    # Persist configured FTP/HR to sync_state so dashboards can read them
+    # Persist configured FTP/HR to sync_state so dashboards can read them.
+    # If either value changed (added, removed, or updated), reset all derived metrics.
+    from db import set_sync_state
     try:
-        from db import set_sync_state
         env_ftp = os.environ.get("VELOMATE_FTP", "")
         env_hr = os.environ.get("VELOMATE_MAX_HR", "")
-        if env_ftp or env_hr:
-            conn = get_connection()
-            try:
-                if env_ftp:
-                    ftp = int(env_ftp)
-                    if ftp > 0:
-                        set_sync_state(conn, "configured_ftp", env_ftp)
-                        print(f"[main] Configured FTP: {env_ftp}W")
-                if env_hr:
-                    hr = int(env_hr)
-                    if hr > 0:
-                        set_sync_state(conn, "configured_max_hr", env_hr)
-                        print(f"[main] Configured Max HR: {env_hr}")
-            finally:
-                conn.close()
+        env_rhr = os.environ.get("VELOMATE_RESTING_HR", "")
+        conn = get_connection()
+        try:
+            ftp = int(env_ftp) if env_ftp else 0
+            hr = int(env_hr) if env_hr else 0
+            rhr = int(env_rhr) if env_rhr else 0
+            ftp_str = str(ftp) if ftp > 0 else "0"
+            hr_str = str(hr) if hr > 0 else "0"
+            rhr_str = str(rhr) if rhr > 0 else "0"
+
+            # Check if values changed
+            old_ftp = get_sync_state(conn, "configured_ftp") or "0"
+            old_hr = get_sync_state(conn, "configured_max_hr") or "0"
+            old_rhr = get_sync_state(conn, "configured_resting_hr") or "0"
+            # FTP/max HR affect TSS, IF, CTL/ATL/TSB. Resting HR affects TRIMP.
+            ftp_changed = (ftp_str != old_ftp)
+            config_changed = ftp_changed or (hr_str != old_hr) or (rhr_str != old_rhr)
+
+            # If thresholds changed, reset all derived metrics BEFORE persisting new values.
+            # This ensures a crash between reset and persist triggers reset again on restart.
+            if config_changed:
+                print("[main] FTP/HR/RHR config changed — resetting derived metrics for recalculation")
+                with conn.cursor() as cur:
+                    # Reset TSS, IF, TRIMP and fitness stats (they depend on thresholds)
+                    cur.execute("UPDATE activities SET tss = NULL, intensity_factor = NULL, trimp = NULL")
+                    # When FTP changes, also reset per-ride FTP so it gets re-backfilled
+                    # with the new configured FTP as fallback
+                    if ftp_changed:
+                        cur.execute("UPDATE activities SET ride_ftp = NULL")
+                        print("[main] ride_ftp reset — will be re-backfilled with new FTP")
+                    cur.execute("DELETE FROM athlete_stats")
+                print("[main] TSS/IF/TRIMP and CTL/ATL/TSB will be recalculated")
+
+            # Opt-in: reset per-ride FTP so all rides use configured FTP.
+            # Set VELOMATE_RESET_RIDE_FTP=1 once, restart, then remove the flag.
+            if os.environ.get("VELOMATE_RESET_RIDE_FTP", "") == "1":
+                print("[main] VELOMATE_RESET_RIDE_FTP=1 — resetting all ride_ftp and derived metrics")
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE activities SET ride_ftp = NULL, tss = NULL, intensity_factor = NULL")
+                    cur.execute("DELETE FROM athlete_stats")
+
+            # Persist current values (0 = auto-estimate, dashboard queries use value > 0)
+            set_sync_state(conn, "configured_ftp", ftp_str)
+            set_sync_state(conn, "configured_max_hr", hr_str)
+            set_sync_state(conn, "configured_resting_hr", rhr_str)
+            print(f"[main] FTP: {ftp}W {'(configured)' if ftp > 0 else '(auto-estimate)'}")
+            print(f"[main] Max HR: {hr} {'(configured)' if hr > 0 else '(auto-estimate)'}")
+            print(f"[main] Resting HR: {rhr if rhr > 0 else 50} {'(configured)' if rhr > 0 else '(default 50 bpm)'}")
+        finally:
+            conn.close()
     except (ValueError, TypeError) as e:
         print(f"[main] Invalid FTP/HR env var (skipping): {e}")
     except Exception as e:

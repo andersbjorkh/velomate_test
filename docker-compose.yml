@@ -9,7 +9,7 @@ services:
     volumes:
       - velomate-postgres-data:/var/lib/postgresql/data
     ports:
-      - "127.0.0.1:5423:5432"
+      - "0.0.0.0:5423:5432"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U velomate -d velomate"]
@@ -28,6 +28,8 @@ services:
       STRAVA_REFRESH_TOKEN: ${STRAVA_REFRESH_TOKEN}
       VELOMATE_MAX_HR: ${VELOMATE_MAX_HR:-0}
       VELOMATE_FTP: ${VELOMATE_FTP:-0}
+      VELOMATE_RESTING_HR: ${VELOMATE_RESTING_HR:-0}
+      VELOMATE_RESET_RIDE_FTP: ${VELOMATE_RESET_RIDE_FTP:-0}
       POLL_INTERVAL_MINUTES: 10
       PYTHONUNBUFFERED: "1"
     depends_on:

@@ -8,10 +8,8 @@ venv/
 *.egg-info/
 dist/
 config.yaml
-.claude/
+.claude/settings.local.json
 .superpowers/
-docs/
-CLAUDE.md
 .coverage
 scripts/github-overlay/
 .pytest_cache/
