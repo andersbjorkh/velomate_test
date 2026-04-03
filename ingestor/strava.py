@@ -347,7 +347,7 @@ def sync_activities(conn, after_epoch: int = None):
     return ingested
 
 
-def backfill(conn, months: int = 12):
+def backfill(conn, months: int = 24):
     """Fetch all activities in last N months, store with streams."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=months * 30)
     after_epoch = int(cutoff.timestamp())
